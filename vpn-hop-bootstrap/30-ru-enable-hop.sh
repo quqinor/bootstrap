@@ -68,7 +68,7 @@ jq -n \
   ],
   outbounds:[{
     type:"vless",tag:"foreign",server:$foreign_ip,server_port:$port,uuid:$uuid,flow:"xtls-rprx-vision",
-    tls:{enabled:true,server_name:$server_name,reality:{enabled:true,public_key:$public_key,short_id:$short_id}}
+    tls:{enabled:true,server_name:$server_name,utls:{enabled:true,fingerprint:chrome},reality:{enabled:true,public_key:$public_key,short_id:$short_id}}
   }],
   route:{
     auto_detect_interface:true,
