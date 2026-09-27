@@ -46,6 +46,7 @@ jq -n \
   --arg public_key "$REALITY_PUBLIC_KEY" \
   --arg short_id "$REALITY_SHORT_ID" \
   --arg server_name "$REALITY_SERVER_NAME" \
+  --arg fingerprint 'chrome' \
   --argjson port "$VLESS_PORT" \
   --argjson ssh_port "$FOREIGN_SSH_PORT" \
   --argjson ifaces "$IFACES_JSON" \
@@ -66,7 +67,7 @@ jq -n \
     tls:{
       enabled:true,
       server_name:$server_name,
-      utls:{enabled:true,fingerprint:"chrome"},
+      utls:{enabled:true,fingerprint:$fingerprint},
       reality:{enabled:true,public_key:$public_key,short_id:$short_id}
     }
   }],
