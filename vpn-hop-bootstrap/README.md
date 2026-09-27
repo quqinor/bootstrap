@@ -1,64 +1,157 @@
-# Two-hop VPN bootstrap
+# Final two-hop VPN bootstrap
 
-Topology: **user -> AmneziaWG 3.1 -> RU VPS -> sing-box VLESS+REALITY TCP/443 -> NL VPS -> Internet**.
+Topology:
 
-Current hosts: RU `138.16.186.130`, NL `13.140.0.219`, Ubuntu 26.04. SSH is moved to TCP `2222`; use UDP `585` for the user-facing AmneziaWG ingress; the inter-server hop uses TCP `443`.
+```text
+RU devices -- AmneziaWG 3.1 --> RU VPS 138.16.186.130
+                                  |
+                                  +-- only Amnezia client traffic --> sing-box VLESS+REALITY TCP/443 --> NL VPS 13.140.0.219 --> Internet
 
-The RU host's own SSH/apt/system traffic stays on the RU uplink. Only traffic arriving from Amnezia's Docker bridge is captured by sing-box. A separate policy-routing blackhole provides **fail-closed** behavior: if sing-box disappears, client egress is blackholed before the normal RU default route instead of leaking through the RU public IP.
-
-## Stage 0: make SSH usable
-
-Upload this repo to GitHub. From each VPS VNC/web console run the raw GitHub script:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/YOU/REPO/main/00-ssh-bootstrap.sh | bash
+RU host SSH/apt/system traffic ---------------------------------------------------------------> RU uplink directly
 ```
 
-On Windows after the server reinstall, clear old host keys:
+Foreign SSH management is intentionally carried inside the same VLESS+REALITY hop instead of relying on raw international SSH. The foreign bootstrap detects whatever SSH port is currently configured (22, 48157, etc.) and puts it in the private hop token:
+
+```text
+Windows -> SSH to RU -> local forward -> RU 127.0.0.1:2201 -> VLESS+REALITY -> NL 127.0.0.1:22
+```
+
+## Files
+
+- `00-ssh-bootstrap.sh` - temporary manageable SSH on RU, default TCP 2222.
+- `10-foreign-vless.sh` - run from the NL provider VNC/web console; installs sing-box and creates VLESS+REALITY on TCP 443.
+- `20-ru-prep.sh` - installs sing-box and forwarding prerequisites on RU.
+- `30-ru-enable-hop.sh` - discovers the Amnezia Docker bridge, routes only its traffic through NL, installs fail-closed policy, and creates RU-local foreign SSH tunnel port 2201.
+- `40-lockdown-ssh.sh` - switches RU SSH to key-only after testing your key.
+- `50-foreign-lockdown.sh` - switches NL SSH to key-only and loopback-only after the VLESS management path is tested.
+- `status.sh` - diagnostics.
+- `backup.sh` - config backup; contains secrets, never commit the output.
+
+## Required order
+
+### A. RU bootstrap
+
+Via RU VNC, once:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/quqinor/bootstrap/main/vpn-hop-bootstrap/00-ssh-bootstrap.sh | bash
+```
+
+Then Windows:
 
 ```powershell
 ssh-keygen -R 138.16.186.130
-ssh-keygen -R 13.140.0.219
+ssh -p 2222 root@138.16.186.130
 ```
 
-Then connect with `ssh -p 2222 root@IP`.
+### B. NL VLESS bootstrap
 
-## Stage 1: foreign/NL
-
-Clone the repo and run `bash 10-foreign-vless.sh`. It installs sing-box from the official SagerNet APT repo, creates VLESS+REALITY on TCP 443, and prints a base64 **hop token**. The token contains the VLESS credential; never commit it. A copy is stored at `/root/vpn-hop/hop-token.txt`.
-
-## Stage 2: RU preparation and Amnezia ingress
-
-Run `bash 20-ru-prep.sh`. Then use a current AmneziaVPN app to add `138.16.186.130:2222` as Self-hosted and install **only AmneziaWG 3.1**, preferably on UDP `585`. Create one test client and verify it works before adding the second hop. At this point it should exit via the RU public IP.
-
-Do not preinstall an old host AmneziaWG kernel module: the privileged Amnezia container can select the host module, and an outdated module can reject AWG 3.1 parameters.
-
-## Stage 3: RU -> NL hop
-
-Copy the hop token from NL and on RU run:
+Do not spend time fixing raw SSH from Russia to NL. From the NL VNC/web console run:
 
 ```bash
-HOP_TOKEN='PASTE_TOKEN_HERE' bash 30-ru-enable-hop.sh
+curl -fsSL https://raw.githubusercontent.com/quqinor/bootstrap/main/vpn-hop-bootstrap/10-foreign-vless.sh | bash
 ```
 
-The script verifies the Amnezia container/`awg0`, discovers its Docker bridges, creates a sing-box TUN using Linux `auto_route` + `auto_redirect`, and installs source-network blackhole rules that are refreshed every minute.
+Copy the printed base64 hop token somewhere private. Do not commit it.
 
-Test from a real Amnezia client. Its public IPv4 should be the NL IP, while `curl -4 https://ifconfig.me/ip` run directly on RU should still show the RU IP.
+### C. Prepare RU
 
-Fail-closed test: run `systemctl stop sing-box` on RU. The Amnezia client should lose Internet while SSH to RU remains reachable. Restore with `systemctl start sing-box`.
+On RU over SSH:
 
-## Stage 4: SSH keys
+```bash
+curl -fsSL https://raw.githubusercontent.com/quqinor/bootstrap/main/vpn-hop-bootstrap/20-ru-prep.sh | bash
+```
 
-Create a Windows key if needed: `ssh-keygen -t ed25519`. Install it on each VPS:
+### D. Install AmneziaWG 3.1 on RU
+
+Use a current AmneziaVPN app. Add self-hosted server `138.16.186.130`, SSH port `2222`, root credentials. Install only AmneziaWG 3.1. Use UDP port `585`.
+
+Create one test user and verify it works before adding the second hop. At this moment its public IP should be `138.16.186.130`.
+
+### E. Enable second hop
+
+On RU:
+
+```bash
+HOP_TOKEN='PASTE_TOKEN_HERE' bash <(curl -fsSL https://raw.githubusercontent.com/quqinor/bootstrap/main/vpn-hop-bootstrap/30-ru-enable-hop.sh)
+```
+
+After success, the Amnezia client public IP should become `13.140.0.219`, while `curl -4 https://ifconfig.me/ip` run directly on RU should still return the RU public IP.
+
+Fail-closed test:
+
+```bash
+systemctl stop sing-box
+```
+
+The connected Amnezia client must lose Internet, but RU SSH must stay alive. Restore:
+
+```bash
+systemctl start sing-box
+```
+
+### F. Access NL SSH through Reality
+
+The hop token already contains the current NL SSH port, so it does not matter whether your NL server currently uses 22, 2222, 48157, etc. On Windows terminal 1:
 
 ```powershell
-Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub | ssh -p 2222 root@SERVER_IP "umask 077; mkdir -p /root/.ssh; cat >> /root/.ssh/authorized_keys"
+ssh -N -L 2201:127.0.0.1:2201 -p 2222 root@138.16.186.130
 ```
 
-Verify a second key-based login, then run `bash 40-lockdown-ssh.sh`. Keep the original session open until the second login works.
+Keep it open. In terminal 2:
 
-## Diagnostics and backup
+```powershell
+ssh -p 2201 root@127.0.0.1
+```
 
-`bash status.sh` shows SSH, sing-box, Amnezia, current egress, fail-closed rules and recent logs. `bash backup.sh` creates a root-only archive containing VPN config/keys; **never upload that archive to GitHub**.
+That second SSH connection is transported as:
 
-If the foreign VPS is replaced later, user Amnezia configs can stay unchanged: rebuild foreign, generate a new hop token, and rerun `30-ru-enable-hop.sh` on RU. If Amnezia/Docker itself is reinstalled, rerun `30-ru-enable-hop.sh` so current bridge interfaces are detected again.
+`Windows -> RU SSH -> RU sing-box -> VLESS+REALITY -> NL localhost:<detected SSH port>`.
+
+### G. Install SSH key and lock down
+
+Generate a Windows key once if needed:
+
+```powershell
+ssh-keygen -t ed25519
+```
+
+RU key install:
+
+```powershell
+Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub | ssh -p 2222 root@138.16.186.130 "umask 077; mkdir -p /root/.ssh; cat >> /root/.ssh/authorized_keys"
+```
+
+Verify a second key-only RU login, then on RU:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/quqinor/bootstrap/main/vpn-hop-bootstrap/40-lockdown-ssh.sh | bash
+```
+
+For NL, keep the RU forwarding terminal open, then:
+
+```powershell
+Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub | ssh -p 2201 root@127.0.0.1 "umask 077; mkdir -p /root/.ssh; cat >> /root/.ssh/authorized_keys"
+```
+
+Verify a second tunneled NL login works without password. Then inside NL:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/quqinor/bootstrap/main/vpn-hop-bootstrap/50-foreign-lockdown.sh | bash
+```
+
+After this, NL sshd listens only on `127.0.0.1:22`, so public bot traffic cannot hit SSH at all. Provider VNC remains the emergency path.
+
+## Recovery
+
+- Foreign dies: Amnezia client traffic fails closed; RU SSH remains direct. Rebuild NL, rerun `10-foreign-vless.sh`, then rerun `30-ru-enable-hop.sh` with the new token. User Amnezia configs do not change.
+- sing-box on RU dies: clients lose Internet instead of leaking through RU IP; RU management remains direct.
+- RU dies: restore Amnezia server config/private keys from a secure backup if you want existing user profiles to survive; otherwise regenerate user profiles.
+
+## Never commit
+
+- hop token
+- `/etc/sing-box/config.json`
+- Amnezia server configs/keys
+- `/root/vpn-hop/*`
+- backup archives
